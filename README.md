@@ -9,7 +9,7 @@ Interface is based on ideas from Irssi and Vim: tabs and splits allow you to see
 
 ## DEPENDS
 
-Based on [Teleperl](https://github.com/vgadfly/teleperl) library and Tkx bridge between Perl and Tcl/Tk.
+Based on [Teleperl](https://github.com/vgadfly/teleperl) library and Tkx bridge between Perl and Tcl/Tk. See there "for GUI app".
 
 TODO
 
