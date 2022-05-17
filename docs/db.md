@@ -492,7 +492,7 @@ CONs:
 
    | id | d_name | chat | message | parent | inode |
    |----|--------|------|---------|--------|-------|
-   |  1 |Telegram| NULL | NULLL   |   NULL | NULL  |
+   |  1 |Telegram| NULL | NULL    |   NULL | NULL  |
    |  2 | NULL   | 1234 | 2345    |    1   | NULL  |
    |  3 | some   | NULL | NULL    |    2   | 3456  |
 
@@ -500,12 +500,12 @@ CONs:
 
 2. How to add needed flags to only those types, then? E.g. an `unread` flag is for entire message, not only all it's versions. And how to store versions? If we add some fields to **directory** table right of inode, to keep versions and flags:
 
-   | id | d_name | chat | message | parent | inode |    time   | API_vers | from_peer | deleted | unread |
-   |----|--------|------|---------|--------|-------|-----------|----------|-----------|---------|--------|
-   |  1 |Telegram| NULL | NULLL   |   NULL | NULL  |   NULL    |   NULL   |   NULL    |  NULL   | NULL   |
-   |  2 | NULL   | 1234 | 2345    |    1   | NULL  |   NULL    |   NULL   |   NULL    |  NULL   | NULL   |
-   |  3 | some   | NULL | NULL    |    2   | 3456  | 165012345 | layer136 | localhost |  false  | true   |
-   |  4 | some   | NULL | NULL    |    2   | 3457  | 165123456 | layer138 | alexhost  |  false  | true   |
+   | id | d_name | chat | message | parent | inode |    time   | API_vers | from_peer | deleted | unread | score 
+   |----|--------|------|---------|--------|-------|-----------|----------|-----------|---------|--------|-------
+   |  1 |Telegram| NULL | NULL    |   NULL | NULL  |   NULL    |   NULL   |   NULL    |  NULL   | NULL   |    0  
+   |  2 | NULL   | 1234 | 2345    |    1   | NULL  |   NULL    |   NULL   |   NULL    |  NULL   | NULL   |    0  
+   |  3 | some   | NULL | NULL    |    2   | 3456  | 165012345 | layer136 | localhost |  false  | true   |  200  
+   |  4 | some   | NULL | NULL    |    2   | 3457  | 165123456 | layer138 | alexhost  |  false  | true   |  100  
 
    then such fields will need to be
 
@@ -525,7 +525,71 @@ CONs:
 
    or inverse path? Finding all occurences for message 2345 in channel 1234 under all accounts - could be expensive.
 
+   -> no, let's have separate tables for this.
+
+   | inode | account_id |  private  | volatile  | volatile_date
+   |-------|------------|-----------|-----------|--------------
+   |  INT  |    INT     | CBOR BLOB | CBOR BLOB | DATE
+
+   and
+
+   | inode | volatile | volatile_date
+   |-------|----------|--------------
+   |  INT  | CBOR BLOB | DATE
+
+   for globally non-private volatile XXX probably move this into main inode info, no need for separate 2-column table
+
 5. Other "normal" relational table - how to mix without errors with all these?..
 
 6. Purge pain.
 
+
+**XXX**
+
+still inode2versions table:
+
+| inode | object_id | obj_time  | API_version | writer_version | from_peer |
+|-------|-----------|-----------|-------------|----------------|-----------|
+| 3456  | 235678    | 165012345 |  layer136   |   Teleperl 0.1 | localhost |
+| 3456  | 235679    | 165123456 |  layer138   |  TeleGayJS 0.2 | alexhost  |
+
+and deleted/unread/score etc. - must be per-inode
+
+# Compression
+
+## Texts
+
+FTS4 (not FTS5) has `compress=` and `uncompress=` options, so this should be used.
+
+Have a table (crc32 INT, dictionary BLOB) ??? may be language_id also?
+
+Don't compress texts less than 90 bytes as per RFC 2394 recommendation, or whose compressed versions expands more than uncompressed (in total length, with header described below). In compressed BLOB, first 3 bytes are '*z\0' (meaning gz, bz, xz, lz, ...) to be distinguishable from UTF8 text, next 1 byte is compressor (TODO: have them named in separate table?), then follows 4 bytes of CRC32 of dictionary used to compress. Then data which decompressor will understand. E.g. `deflate` allows 32 Kb dictionaries and checks them with CRC32.
+
+TODO what if no dict - waste 4 zero bytes or reduce to 128 compressors?
+-> make compressor SQLite varint format (actually Perl's `pack('w')`) so it can has flags and be extensible
+
+As dictionaries are supposed to be cached in memory, as `deflate` has 32 Kb limit which will not waste much, there should not be many of them, so there is problem to have good dictionary. Possible way is to process corpus of texts for several years, split them to words (here Unicode normalization and FTS tokenizers must be taken into account), drop words with length 3 chars or less, sort words by rarest first frequent last then by length shortest last, and take `tail -c 32768` of this output as dictionary TBD eliminate space in this output?
+
+TBD as edits are often just correcting typos, combine text compression with Fossil delta? Then need an algo to look for similar text to take as delta... edit versions are natural candidates, but that's not always the case, and may be possible from another group. Also, this contradicts is we want to support deleting edits (intermediate, oldest) - this may require repacking other texts, and first have to find them!
+
+## CBOR repeated strings
+
+[CBOR::XS](https://metacpan.org/pod/CBOR::XS) supports [repeated string compression CBOR Tag](http://cbor.schmorp.de/stringref). Actually, it is defined only on previous part of CBOR document itself, so the following hacky trick is employed: we create an outer array of two elements, first ([0]) will be array of strings which will serve as a dictionary, second is our actual data structure. On encoding the dictionary is prepended this way, then initial array byte and dictionary array are removed, leaving only relevant data structure (so if it happens it has no repeated strings from dictionary, it will be just equal to as encoded without all these complexities). On decoding, initial array byte and encoded dictionary array are prepened to CBOR BLOB, and then `decode_cbor($constructed_blob)->[1]` is returned.
+
+The dictionary array of strings is obtained by:
+
+```sql
+SELECT name FROM attribute_name ORDER BY id LIMIT (
+    SELECT value FROM db_settings WHERE param = 'cbor_dict_limit'
+)
+```
+
+The limit is here as it takes memory to hash all dictionary strings, which can be unacceptable when database grows too large.
+
+# TODO
+
+unseen / unread / read @ time, to see new edits ...or just ctime?
+
+refetch_access_lost for not deleted but bans?
+
+on object splitting, how to find an INT id for reference to? create a way to have SHA256 of object?
