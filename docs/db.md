@@ -500,12 +500,12 @@ CONs:
 
 2. How to add needed flags to only those types, then? E.g. an `unread` flag is for entire message, not only all it's versions. And how to store versions? If we add some fields to **directory** table right of inode, to keep versions and flags:
 
-   | id | d_name | chat | message | parent | inode |    time   | API_vers | from_peer | deleted | unread | score 
-   |----|--------|------|---------|--------|-------|-----------|----------|-----------|---------|--------|-------
-   |  1 |Telegram| NULL | NULL    |   NULL | NULL  |   NULL    |   NULL   |   NULL    |  NULL   | NULL   |    0  
-   |  2 | NULL   | 1234 | 2345    |    1   | NULL  |   NULL    |   NULL   |   NULL    |  NULL   | NULL   |    0  
-   |  3 | some   | NULL | NULL    |    2   | 3456  | 165012345 | layer136 | localhost |  false  | true   |  200  
-   |  4 | some   | NULL | NULL    |    2   | 3457  | 165123456 | layer138 | alexhost  |  false  | true   |  100  
+   | id | d_name | chat | message | parent | inode |    time    | API_vers | from_peer | deleted | unread | score |
+   |----|--------|------|---------|--------|-------|------------|----------|-----------|---------|--------|-------|
+   |  1 |Telegram| NULL | NULL    |   NULL | NULL  |    NULL    |   NULL   |   NULL    |  NULL   | NULL   |    0  |
+   |  2 | NULL   | 1234 | 2345    |    1   | NULL  |    NULL    |   NULL   |   NULL    |  NULL   | NULL   |    0  |
+   |  3 | some   | NULL | NULL    |    2   | 3456  | 1650123456 | layer136 | localhost |  false  | true   |  200  |
+   |  4 | some   | NULL | NULL    |    2   | 3457  | 1651234567 | layer138 | alexhost  |  false  | true   |  100  |
 
    then such fields will need to be
 
@@ -518,7 +518,7 @@ CONs:
 
 3. How to store references to split objects, e.g. webpage outside of message? How to query against them? Repeat graph way from variant 3, but now with object IDs?
 
-4. Augmentation of main objects with private/volatile feilds (e.g. `access_hash`/`file_reference`) - just repeat mini-objects on e.g. per-account path and then merge them? This echoes object "include/mount" problem.
+4. Augmentation of main objects (let's call this **public** part, even if that's of private message) with private/volatile feilds (e.g. `access_hash`, `file_reference`, `UserStatusOnline/expires`) - just repeat mini-objects on e.g. per-account path and then merge them? This echoes object "include/mount" problem.
 
        main: /Telegram/Chan1234/2345
        priv: /Telegram/Acc98/Chan1234/2345
@@ -529,15 +529,17 @@ CONs:
 
    | inode | account_id |  private  | volatile  | volatile_date
    |-------|------------|-----------|-----------|--------------
-   |  INT  |    INT     | CBOR BLOB | CBOR BLOB | DATE
+   |  INT  |    INT     | CBOR BLOB | CBOR BLOB | DATE when what's in `volatile` was received from cloud
 
    and
 
    | inode | volatile | volatile_date
    |-------|----------|--------------
-   |  INT  | CBOR BLOB | DATE
+   |  INT  | CBOR BLOB | DATE when what's in `volatile` was received from cloud
 
    for globally non-private volatile XXX probably move this into main inode info, no need for separate 2-column table
+
+   XXX UserStatusOnline/expires is really per version?
 
 5. Other "normal" relational table - how to mix without errors with all these?..
 
@@ -548,10 +550,10 @@ CONs:
 
 still inode2versions table:
 
-| inode | object_id | obj_time  | API_version | writer_version | from_peer |
-|-------|-----------|-----------|-------------|----------------|-----------|
-| 3456  | 235678    | 165012345 |  layer136   |   Teleperl 0.1 | localhost |
-| 3456  | 235679    | 165123456 |  layer138   |  TeleGayJS 0.2 | alexhost  |
+| inode | object_id |  obj_time  | API_version | writer_version | from_peer |
+|-------|-----------|------------|-------------|----------------|-----------|
+| 3456  | 235678    | 1650123456 |  layer136   |   Teleperl 0.1 | localhost |
+| 3456  | 235679    | 1651234567 |  layer138   |  TeleGayJS 0.2 | alexhost  |
 
 and deleted/unread/score etc. - must be per-inode
 
@@ -563,9 +565,9 @@ FTS4 (not FTS5) has `compress=` and `uncompress=` options, so this should be use
 
 Have a table (crc32 INT, dictionary BLOB) ??? may be language_id also?
 
-Don't compress texts less than 90 bytes as per RFC 2394 recommendation, or whose compressed versions expands more than uncompressed (in total length, with header described below). In compressed BLOB, first 3 bytes are '*z\0' (meaning gz, bz, xz, lz, ...) to be distinguishable from UTF8 text, next 1 byte is compressor (TODO: have them named in separate table?), then follows 4 bytes of CRC32 of dictionary used to compress. Then data which decompressor will understand. E.g. `deflate` allows 32 Kb dictionaries and checks them with CRC32.
+Don't compress texts less than 90 bytes as per RFC 2394 recommendation, or whose compressed versions expands more than uncompressed (in total length, with header described below). In compressed BLOB, first 3 bytes are `'*z\0'` (meaning gz, bz, xz, lz, ...) to be distinguishable from UTF8 text, next 1 byte is compressor (TODO: have them named in separate table?), then follows 4 bytes of CRC32 of dictionary used to compress. Then data which decompressor will understand. E.g. `deflate` allows 32 Kb dictionaries and checks them with CRC32.
 
-TODO what if no dict - waste 4 zero bytes or reduce to 128 compressors?
+TODO what if no dict - waste 4 zero bytes or reduce to 128 compressors?  
 -> make compressor SQLite varint format (actually Perl's `pack('w')`) so it can has flags and be extensible
 
 As dictionaries are supposed to be cached in memory, as `deflate` has 32 Kb limit which will not waste much, there should not be many of them, so there is problem to have good dictionary. Possible way is to process corpus of texts for several years, split them to words (here Unicode normalization and FTS tokenizers must be taken into account), drop words with length 3 chars or less, sort words by rarest first frequent last then by length shortest last, and take `tail -c 32768` of this output as dictionary TBD eliminate space in this output?
@@ -586,10 +588,30 @@ SELECT name FROM attribute_name ORDER BY id LIMIT (
 
 The limit is here as it takes memory to hash all dictionary strings, which can be unacceptable when database grows too large.
 
-# TODO
+# TODO / TBD
 
 unseen / unread / read @ time, to see new edits ...or just ctime?
 
 refetch_access_lost for not deleted but bans?
 
 on object splitting, how to find an INT id for reference to? create a way to have SHA256 of object?
+
+variant: at INSERT populate `additional_section` (? a-la DNS ? or `outgoing_edge` ?) with links to object (concrete versions) to return with this, e.g. for `user` together with `message`; as Telegram returns users and chats
+...but, querying and returning `chats` for every message could be expensive, and caller likely to have it in memory cache already
+- still should be done for mentioned chats, however (not that which it belongs to)
+- what with using this for compound objects? e.g. a local comment to picture will find picture by this, but what if there are too many messages referring to this picture?
+- about name "compound object", should it be really used for "photo of different sizes" or "video + thumbnail? may be "package" ?
+
+ipath=NULL for metadata
+
+not inode, but versions also in tree, so distinguish tree children and attributes like XML/DOM ?
+
+move `from_peer` in front of tree? this would be consistent with e.g. Telegram's "common box" messages, which are enumerated per-account - but conflicts with `unread` being per-message, not per-version... though it's interesting idea, what if received version differs from what was read? the same problem with edited messages, BTW
+
+...looks like need a table, one or more columns of it itself a path/tree - that is, not a "table inside a tree ['s node]", but a "tree (or more) inside a table" ?
+
+the concept of FS-like tree and inodes was for hardlinks - e.g. `Telegram/commonbox/712345` and `Telegram/Chat/123/712345` is in fact the same message, as well as `Telegram/commonbox/712346` and `Telegram/User/456/712346` are also the same, due to continuous numeration of messages in old chats and private dialogs in Telegram
+
+also, single tree is a natural fit for MQTT topics, for splitting by path to different DB shards, and for DB object browser with standard Tree Control widgets, Regedit-like - though latter possibly may be tree+table...
+
+may be don't give any real sense to inode? i.e. just JOIN on it and nothing more?
