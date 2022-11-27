@@ -314,9 +314,11 @@ So let's brainstorm how we can store all such versions efficiently, avoiding dup
 
 ### C object graph / memory dump - variant 0
 
-Imagine we have machine with 1 TB memory and unbreakable power, so we don't need a database - how would store objects Perl itself in memory? It will have a bunch of SV, AV and HV objects with refcounts, which maps to DB tables very simply - just put ID's instead of reference pointers in memory. Given helper haches to index e.g. long PV's to avoid duplicate data, this will also be very effective storage!
+Imagine we have machine with 1 TB memory and unbreakable power, so we don't need a database - how would store objects Perl itself in memory? It will have a bunch of SV, AV and HV objects with refcounts, which maps to DB tables very simply - just put ID's instead of reference pointers in memory. Given helper hashes to index e.g. long PV's to avoid duplicate data, this will also be very effective storage!
 
 However, how would we query such database for questions like "give me root objects where strings contain this word at any level deep" ? This would require a truly graph-oriented DB or at least some subset, wuth DAG paths. Even if we use some workaround knowing it's DAG staring only at objects of some type, there will be still too many paths in graph with every elementary object as a node.
+
+Also, it won't be _most_ effective storage with respect to diffs - consider hash with 30 members, a new version will duplicate all 30 elements even if only one is edited; finding some base text (PV) for a diff (e.g. a type edit) would be difficult, too.
 
 ### Everything in CBOR, texts outside, deltas - variant 1
 
@@ -352,11 +354,13 @@ For arrays in dump, let it pretend that "key name" is a number - that is, value 
 
 **Leaf values table:**
 
-| id | is_array | reftype | nameidx | value | value_aux |
-|----|----------|---------|---------|-------|-----------|
-| INT| BOOL   | what is val | key name or array index | actual value or reference | helper, e.g. hash of text |
+| id | is_array | reftype | cbor_tag |nameidx | value | value_aux |
+|----|----------|---------|----------|--------|-----------|---------|
+| INT| BOOL | what is val | usually NULL | key name or array index | actual value or reference | helper, e.g. hash of text |
 
-Now, we can have `INDEX ON (nameidx, value)` and so  Just query like `WHERE key = 'user_id' AND value = 123456789` (conceptually, JOINs will complicate actual queries).
+**TBD** merge `reftype` and `cbor_tag`? or make individual fields for JOIN on texts and employ `CHECK()` constraints of only one non-NULL of them?
+
+Now, we can have `INDEX ON (nameidx, value)` and so  Just query like `WHERE key = 'user_id' AND value = 123456789` (conceptually, as JOINs will complicate actual queries).
 
 We still need to keep tree structure of objects somehow. Luckily, [CBOR Tag 26](http://cbor.schmorp.de/perl-object) does not mandate rigid format, so arguments in arrays may be just IDs from leaf values table - very efficient, even more than [stringref](http://cbor.schmorp.de/stringref) (tags 25/256), except that some subtleties of storing contatiner names must be resolved (probably with some custom CBOR tag).
 
@@ -432,7 +436,7 @@ $root    ->{media}        ->{photo} ->{sizes} ->[3]   ->{sizes}  ->[4]    = 1212
 Of course, in addition to autovivifucation we'll need class information (to bless) here. First, let's define auxiliary class information table, with base/child class relationships:
 
 | id (INT) | parent (INT) | class_name (TEXT) |
-|-----------|-----------|
+|----------|--------------|------------|
 | 0 | NULL | '' |
 | 1 | NULL | 'Telegram::Message' |
 | 2 | 1 | 'Telegram::ServiceMessage' |
@@ -541,6 +545,18 @@ CONs:
 
    XXX UserStatusOnline/expires is really per version?
 
+   or not. Reactions and read statuses require matrix:
+
+   | inode | account_id |  path_id  |    date    | data (CBOR BLOB)
+   |-------|------------|-----------|------------|--------------
+   | 12345 |    NULL    |    NULL   | 1650123456 | {views:67868}
+   | 12345 |    NULL    |    2345   | 1650123456 | {reaction:"thumb_up"}
+   | 12345 |    NULL    |    3456   | 1650123456 | {reaction:"thumb_up"}
+   | 12345 |    NULL    |    4567   | 1650123456 | {reaction:"thumb_down}
+   | 12345 |    NULL    |    7890   | 1650123456 | {reaction:"shit"}
+   | 12345 |      1     |    NULL   | 1650123456 | {access_hash:1234567890}
+   | 12345 |      2     |    NULL   | 1650123456 | {access_hash:2345678901}
+
 5. Other "normal" relational table - how to mix without errors with all these?..
 
 6. Purge pain.
@@ -556,6 +572,7 @@ still inode2versions table:
 | 3456  | 235679    | 1651234567 |  layer138   |  TeleGayJS 0.2 | alexhost  |
 
 and deleted/unread/score etc. - must be per-inode
+- make it Rtree on object_id and move inode and software/peer columns to objects table
 
 # Compression
 
@@ -565,14 +582,14 @@ FTS4 (not FTS5) has `compress=` and `uncompress=` options, so this should be use
 
 Have a table (crc32 INT, dictionary BLOB) ??? may be language_id also?
 
-Don't compress texts less than 90 bytes as per RFC 2394 recommendation, or whose compressed versions expands more than uncompressed (in total length, with header described below). In compressed BLOB, first 3 bytes are `'*z\0'` (meaning gz, bz, xz, lz, ...) to be distinguishable from UTF8 text, next 1 byte is compressor (TODO: have them named in separate table?), then follows 4 bytes of CRC32 of dictionary used to compress. Then data which decompressor will understand. E.g. `deflate` allows 32 Kb dictionaries and checks them with CRC32.
+Don't compress texts less than 90 bytes as per RFC 2394 recommendation, or whose compressed versions expands more than uncompressed (in total length, with header described below). In compressed BLOB, first 3 bytes are `'?z\0'` (meaning gz, bz, xz, lz, ...) to be distinguishable from UTF8 text, next 1 byte is compressor (TODO: have them named in separate table?), then follows 4 bytes of CRC32 of dictionary used to compress. Then data which decompressor will understand. E.g. `deflate` allows 32 Kb dictionaries and checks them with CRC32.
 
-TODO what if no dict - waste 4 zero bytes or reduce to 128 compressors?  
+TODO what if no dict - waste 4 zero bytes or reduce to 128 compressors?
 -> make compressor SQLite varint format (actually Perl's `pack('w')`) so it can has flags and be extensible
 
 As dictionaries are supposed to be cached in memory, as `deflate` has 32 Kb limit which will not waste much, there should not be many of them, so there is problem to have good dictionary. Possible way is to process corpus of texts for several years, split them to words (here Unicode normalization and FTS tokenizers must be taken into account), drop words with length 3 chars or less, sort words by rarest first frequent last then by length shortest last, and take `tail -c 32768` of this output as dictionary TBD eliminate space in this output?
 
-TBD as edits are often just correcting typos, combine text compression with Fossil delta? Then need an algo to look for similar text to take as delta... edit versions are natural candidates, but that's not always the case, and may be possible from another group. Also, this contradicts is we want to support deleting edits (intermediate, oldest) - this may require repacking other texts, and first have to find them!
+TBD as edits are often just correcting typos, combine text compression with Fossil delta? Then need an algo to look for similar text to take as delta... edit versions are natural candidates, but that's not always the case, and may be possible from another group. Also, this contradicts to feature we want to support deleting edits (intermediate, oldest... for conserving space and preventing DoS against us with many edits) - this may require repacking other texts, and first have to find them!
 
 ## CBOR repeated strings
 
@@ -595,6 +612,9 @@ unseen / unread / read @ time, to see new edits ...or just ctime?
 refetch_access_lost for not deleted but bans?
 
 on object splitting, how to find an INT id for reference to? create a way to have SHA256 of object?
+- have we here problem of differentiating test / main cloud? supposedly **yes** - if just by leaf value, what if same ID collision on both test and main?
+- or invent some "relative" addressing of IDs
+- may be make a reference a "date (when was valid) + path" ? or take date range from source object itself?
 
 variant: at INSERT populate `additional_section` (? a-la DNS ? or `outgoing_edge` ?) with links to object (concrete versions) to return with this, e.g. for `user` together with `message`; as Telegram returns users and chats
 ...but, querying and returning `chats` for every message could be expensive, and caller likely to have it in memory cache already
@@ -606,12 +626,27 @@ ipath=NULL for metadata
 
 not inode, but versions also in tree, so distinguish tree children and attributes like XML/DOM ?
 
-move `from_peer` in front of tree? this would be consistent with e.g. Telegram's "common box" messages, which are enumerated per-account - but conflicts with `unread` being per-message, not per-version... though it's interesting idea, what if received version differs from what was read? the same problem with edited messages, BTW
+move `from_peer` in front of tree? this would be consistent with e.g. Telegram's "common box" messages, which are enumerated per-account - but conflicts with `unread` being per-message, not per-version... though it's interesting idea, what if received version differs from what was previously read by user in GUI ? the same problem with edited messages, BTW
 
 ...looks like need a table, one or more columns of it itself a path/tree - that is, not a "table inside a tree ['s node]", but a "tree (or more) inside a table" ?
 
 the concept of FS-like tree and inodes was for hardlinks - e.g. `Telegram/commonbox/712345` and `Telegram/Chat/123/712345` is in fact the same message, as well as `Telegram/commonbox/712346` and `Telegram/User/456/712346` are also the same, due to continuous numeration of messages in old chats and private dialogs in Telegram
 
 also, single tree is a natural fit for MQTT topics, for splitting by path to different DB shards, and for DB object browser with standard Tree Control widgets, Regedit-like - though latter possibly may be tree+table...
+-> however, to support migration of objects between shards, still graph relations must exist (Sqlite::VersionedObjectGraph ?) - let's see https://github.com/dpapathanasiou/simple-graph
+- and graph is probaly a must due to stickers - stickerSet references documents, each document is just a file with Sticker attribute pointing back to stickerSet
 
 may be don't give any real sense to inode? i.e. just JOIN on it and nothing more?
+
+yes, have `is_content` on versions - e.g. plugin-decoded GPG message also may have edits, as by original message; and probably jsut move unread/score to plugin object (with `unseen` being determined by number pointer in dialog, and `unread` being explicitly toggled by user)
+
+can't have class/type in inode, must be in object - as reference from inode matrix may be for path which will be created just for this as we don't have real objects on it yet
+
+use technique similar to SMTP's dot-stuffing in MQTT mapping (in following examples slashes are to show it's segment, they are not part of value):
+* "/::string/" segment is "/:string/", that is, simple escaping of leading ":" itself
+* ":I" means integer, e.g "/:I123456/" or "/:I-123" for negative
+* ":F" means IEEE float (double), e.g. "/:F.05/" (0.05) or "/:F-2e-3/" (-0.002)
+* ":N" means NULL (`undef` in Perl) __TBD__ what? in identifier? let's prohibit it
+* TBD some way to encode chars prohibited in MQTT: U+0001..U+001F control characters, U+007F..U+009F control characters and "+" or "#"
+  - may be ":\" and then \c[ and \x1b etc. like in Perl ?
+* other variants after initial dot are currently an error, reserved for future extension
