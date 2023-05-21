@@ -141,3 +141,11 @@ https://en.wikipedia.org/w/index.php?title=WhatsApp&type=revision&diff=999006568
 ===
 
 https://meduza.io/feature/2022/02/11/wired-vypustil-ogromnyy-tekst-o-telegram-pavel-durov-v-nem-ne-borets-za-svobodu-a-pragmatichnyy-biznesmen-i-predvoditel-sekty-iz-podchinennyh
+
+
+Sominemo, [14.10.22 17:15]
+[Forwarded from Sominemo]
+Telegram Android передаёт (https://github.com/DrKLO/Telegram/blob/abb896635f849a93968a2ba35a944c91b4978be4/TMessagesProj/jni/tgnet/ConnectionsManager.cpp#L2778) незадокументированный 10й флаг (1024) при инициализации подключения (initConnection, #c1cd5ea9 (https://core.telegram.org/method/initConnection)) для индикации виртуалки (https://github.com/DrKLO/Telegram/blob/abb896635f849a93968a2ba35a944c91b4978be4/TMessagesProj/src/main/java/org/telegram/tgnet/ConnectionsManager.java#L595) 🥴
+
+
+чехарда с -workdir в Telegram Desktop - собранная с отладкой версия пытается писать логи туда, где бинарь, на юниксах, потому что на машине Престона ему надо чтоб не писала в релизную
