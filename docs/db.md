@@ -316,7 +316,7 @@ So let's brainstorm how we can store all such versions efficiently, avoiding dup
 
 Imagine we have machine with 1 TB memory and unbreakable power, so we don't need a database - how would store objects Perl itself in memory? It will have a bunch of SV, AV and HV objects with refcounts, which maps to DB tables very simply - just put ID's instead of reference pointers in memory. Given helper hashes to index e.g. long PV's to avoid duplicate data, this will also be very effective storage!
 
-However, how would we query such database for questions like "give me root objects where strings contain this word at any level deep" ? This would require a truly graph-oriented DB or at least some subset, wuth DAG paths. Even if we use some workaround knowing it's DAG staring only at objects of some type, there will be still too many paths in graph with every elementary object as a node.
+However, how would we query such database for questions like "give me root objects where strings contain this word at any level deep" ? This would require a truly graph-oriented DB or at least some subset, with DAG paths. Even if we use some workaround knowing it's DAG starting only at objects of some type, there will be still too many paths in graph with every elementary object as a node.
 
 Also, it won't be _most_ effective storage with respect to diffs - consider hash with 30 members, a new version will duplicate all 30 elements even if only one is edited; finding some base text (PV) for a diff (e.g. a type edit) would be difficult, too.
 
@@ -330,7 +330,7 @@ For searching other values, [Application-defined SQL function](https://sqlite.or
 
 PROs:
 
-* serializing and deserealizing from CBOR is very simple and can support any data
+* serializing and deserializing from CBOR is very simple and can support any data
 * given auxiliary object with every field name in database, using [Repeated string compression CBOR Tag](http://cbor.schmorp.de/stringref) (combined with some help like prepending aux object and deleting it) will also yield very compact storage - just about two integers for every 'key => value' pair
 
 CONs:
@@ -433,7 +433,7 @@ $root    ->{reply_markup} ->{rows}  ->[1]                        ->{text} = 'ðŸ§
 $root    ->{media}        ->{photo} ->{sizes} ->[3]   ->{sizes}  ->[4]    = 121261;
 ```
 
-Of course, in addition to autovivifucation we'll need class information (to bless) here. First, let's define auxiliary class information table, with base/child class relationships:
+Of course, in addition to autovivification we'll need class information (to bless) here. First, let's define auxiliary class information table, with base/child class relationships:
 
 | id (INT) | parent (INT) | class_name (TEXT) |
 |----------|--------------|------------|
@@ -451,7 +451,7 @@ Now, modify **Object to leaf table** from variant 2 to two tables:
 
 Each row will correspond to perl depict above, but with either included or excluded, and each object now has `diff_to` property - from which to borrow path/values, or vice versa, to include (non-diff object will have rows only in `plus` table`).
 
-And, of course. the most interesting part...
+And, of course, the most interesting part...
 
 **Internal paths table** `USING fts5`:
 
@@ -481,7 +481,7 @@ CONs:
 
 * still the same self cross-join problem as in variant 2
 * hard work to support from application
-* either had to cache in memory "words" for classes and attributes or issue many quieries
+* either had to cache in memory "words" for classes and attributes or issue many queries
 * limit of 1 million classes, no multiple inheritance
 * need to somehow to find a good candidate for diff - this is again not a group of versions, but individual objects
 * complicated queries with compoud SELECT - probably will support only one level "delta to base", not "delta to delta"
@@ -527,7 +527,7 @@ CONs:
        main: /Telegram/Chan1234/2345
        priv: /Telegram/Acc98/Chan1234/2345
 
-   or inverse path? Finding all occurences for message 2345 in channel 1234 under all accounts - could be expensive.
+   or inverse path? Finding all occurrences for message 2345 in channel 1234 under all accounts - could be expensive.
 
    -> no, let's have separate tables for this.
 
@@ -545,17 +545,33 @@ CONs:
 
    XXX UserStatusOnline/expires is really per version?
 
-   or not. Reactions and read statuses require matrix:
+   or not. Reactions and read statuses require matrix, where `by_path` is e.g. user who made like reaction:
 
-   | inode | account_id |  path_id  |    date    | data (CBOR BLOB)
+   | inode | account_id | by_path_id |    date   | data (CBOR BLOB)
    |-------|------------|-----------|------------|--------------
    | 12345 |    NULL    |    NULL   | 1650123456 | {views:67868}
    | 12345 |    NULL    |    2345   | 1650123456 | {reaction:"thumb_up"}
    | 12345 |    NULL    |    3456   | 1650123456 | {reaction:"thumb_up"}
-   | 12345 |    NULL    |    4567   | 1650123456 | {reaction:"thumb_down}
+   | 12345 |    NULL    |    4567   | 1650123456 | {reaction:"thumb_down"}
    | 12345 |    NULL    |    7890   | 1650123456 | {reaction:"shit"}
    | 12345 |      1     |    NULL   | 1650123456 | {access_hash:1234567890}
    | 12345 |      2     |    NULL   | 1650123456 | {access_hash:2345678901}
+
+   - in theory this is like having edge in graph to user who reactioned, think about graph mechanism instead?
+     - would require clusters/subgraphs also? because of _some_ versions pointing vs _all_ versions pointing
+       - huh, use a "compound" object for inode/subgraph?
+
+   - graphviz quote:
+
+     > An edge statement allows a subgraph on both the left and right sides of the edge operator. When this occurs, an edge is created from every node on the left to every node on the right. For example, the specification
+
+     >    A -> {B C}
+
+     > is equivalent to
+
+     >    A -> B
+     >    A -> C
+
 
 5. Other "normal" relational table - how to mix without errors with all these?..
 
@@ -573,6 +589,10 @@ still inode2versions table:
 
 and deleted/unread/score etc. - must be per-inode
 - make it Rtree on object_id and move inode and software/peer columns to objects table
+- ...or split info for some per-path, some per-inode? e.g. peer in inode, score in path?
+- what if directory is just object and MQTT path is via hashes, like JSON-path, so hardlinks are just refs to same `{}` ?..
+  - mutability problem?
+  - pollutes key names for typical objects
 
 # Compression
 
@@ -638,7 +658,9 @@ also, single tree is a natural fit for MQTT topics, for splitting by path to dif
 
 may be don't give any real sense to inode? i.e. just JOIN on it and nothing more?
 
-yes, have `is_content` on versions - e.g. plugin-decoded GPG message also may have edits, as by original message; and probably jsut move unread/score to plugin object (with `unseen` being determined by number pointer in dialog, and `unread` being explicitly toggled by user)
+yes, have `is_content` on versions - e.g. plugin-decoded GPG message also may have edits, as by original message; and probably just move unread/score to plugin object (with `unseen` being determined by number pointer in dialog, and `unread` being explicitly toggled by user)
+- or NULL for content objects, and typename for plugin-objects - like HFS filesystem forks or NTFS streams?
+- put info about cached files (e.g. images) to such plugin-obhects also? but cached-file info is unversioned by it's nature...
 
 can't have class/type in inode, must be in object - as reference from inode matrix may be for path which will be created just for this as we don't have real objects on it yet
 
@@ -650,7 +672,16 @@ use technique similar to SMTP's dot-stuffing in MQTT mapping (in following examp
 * TBD some way to encode chars prohibited in MQTT: U+0001..U+001F control characters, U+007F..U+009F control characters and "+" or "#"
   - may be ":\" and then \c[ and \x1b etc. like in Perl ?
 * other variants after initial dot are currently an error, reserved for future extension
+* probably URL-like percent-encoding is better, start with e.g. %i for Integer, %r for real, %25 if UTF-8 starts from %, and %U for base85 non-padded, %V for 1 byte pad, ...
 
+   base85 variant - exclude 0x7f and 10 chars:
+    0  1   2   3   4   5   6   7   8   9
+    sp "   #   $   '   +   /   \   {   }
+
+Data::DPath is essentially a small graph query language, just limited to tree and not many functions - so making somewhat generic for graph queries solves DPath support problem, too...
+
+
+what if no FS-like tree at all - just LDAP-like search on attributes like 'Telegram' & 'channel=...' & 'date>=...' ?
 
 LDAP:
 For example, an entry representing a person might belong to the classes "top" and "person". Membership in the "person" class would require the entry to contain the "sn" and "cn" attributes, and allow the entry also to contain "userPassword", "telephoneNumber", and other attributes. Since entries may have multiple ObjectClasses values, each entry has a complex of optional and mandatory attribute sets formed from the union of the object classes it represents. ObjectClasses can be inherited, and a single entry can have multiple ObjectClasses values that define the available and required attributes of the entry itself. A parallel to the schema of an objectClass is a class definition and an instance in Object-oriented programming, representing LDAP objectClass and LDAP entry, respectively.
