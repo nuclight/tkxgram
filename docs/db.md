@@ -40,7 +40,7 @@ So a version of object need to have at least:
 Other questions need to be considered:
 
 - what to do if objects from different peers mismatch? (maliciuos peer?)
-- how to somewhat efficiently scan for new object to send to peer, e.g. "in today batch" ?
+- how to somewhat efficiently scan for new objects to send to peer, e.g. "in today batch" ?
 
 ### Query like XPath/DPath/MongoDB
 
@@ -83,7 +83,7 @@ As this is historical data storage, and may be of different protocols, some univ
                 38692,
                 77746,
                 107586,
-		121261
+                121261
               ],
               'h' => 1028,
               'w' => 918,
@@ -229,7 +229,7 @@ As this is historical data storage, and may be of different protocols, some univ
       ],
       'date' => 1645507727,
       'id' => 526,
-      'message' => 'https://telegra.ph/Diana-de-Puate-02-22 Here goes some descriptive text for humorous text at the link, about half Kbyte long.…',
+      'message' => 'https://telegra.ph/Diana-de-Puate-02-22 Here goes some fixed descriptive text for humorous text at the link, about half Kbyte long.…',
       'post' => 1,
       'edit_date' => 1648838557,
       'reply_markup' => bless( {
@@ -360,9 +360,9 @@ For arrays in dump, let it pretend that "key name" is a number - that is, value 
 
 **TBD** merge `reftype` and `cbor_tag`? or make individual fields for JOIN on texts and employ `CHECK()` constraints of only one non-NULL of them?
 
-Now, we can have `INDEX ON (nameidx, value)` and so  Just query like `WHERE key = 'user_id' AND value = 123456789` (conceptually, as JOINs will complicate actual queries).
+Now, we can have `INDEX ON (nameidx, value)` and so... Just query like `WHERE key = 'user_id' AND value = 123456789` (conceptually, as JOINs will complicate actual queries).
 
-We still need to keep tree structure of objects somehow. Luckily, [CBOR Tag 26](http://cbor.schmorp.de/perl-object) does not mandate rigid format, so arguments in arrays may be just IDs from leaf values table - very efficient, even more than [stringref](http://cbor.schmorp.de/stringref) (tags 25/256), except that some subtleties of storing contatiner names must be resolved (probably with some custom CBOR tag).
+We still need to keep tree structure of objects somehow. Luckily, [CBOR Tag 26](http://cbor.schmorp.de/perl-object) does not mandate rigid format, so arguments in arrays may be just IDs from leaf values table - very efficient, even more than [stringref](http://cbor.schmorp.de/stringref) (tags 25/256), except that some subtleties of storing container names must be resolved (probably with some custom CBOR tag).
 
 And now, for searching from leaf values to master object, we have table:
 
@@ -484,7 +484,7 @@ CONs:
 * either had to cache in memory "words" for classes and attributes or issue many queries
 * limit of 1 million classes, no multiple inheritance
 * need to somehow to find a good candidate for diff - this is again not a group of versions, but individual objects
-* complicated queries with compoud SELECT - probably will support only one level "delta to base", not "delta to delta"
+* complicated queries with compound SELECT - probably will support only one level "delta to base", not "delta to delta"
 
 ## TBD / Still open questions
 
@@ -564,13 +564,13 @@ CONs:
    - graphviz quote:
 
      > An edge statement allows a subgraph on both the left and right sides of the edge operator. When this occurs, an edge is created from every node on the left to every node on the right. For example, the specification
-
-     >    A -> {B C}
-
+     >
+     >     A -> {B C}
+     >
      > is equivalent to
-
-     >    A -> B
-     >    A -> C
+     >
+     >     A -> B
+     >     A -> C
 
 
 5. Other "normal" relational table - how to mix without errors with all these?..
@@ -593,6 +593,105 @@ and deleted/unread/score etc. - must be per-inode
 - what if directory is just object and MQTT path is via hashes, like JSON-path, so hardlinks are just refs to same `{}` ?..
   - mutability problem?
   - pollutes key names for typical objects
+
+## Feb 2024
+
+if perl variant, then do we need SHA1 in each object? or SipHash and let get from DB to solve collisions? how to put new object?
+
+files - put `file_glob` in each and every object? to have several files in cache
+
+bless - not just class, but reference to type table which also has version, e.g. TL scheme constructor/layer
+
+`sys_upd_date` ?
+
+we (almost?) forced in Perl  (variant 0) due to server's bug - presence of
+```perl
+  ext_layers => {
+    136 => {
+      142306870 => 'Telegram::MessageReactions',
+      739712882 => 'Telegram::Dialog'
+    }
+  },
+  in => bless( {
+...
+
+```
+
+TBD what if object from peers had different schema versions but same CBOR? do we need type list? then it must be separate table `(avhv_id, class, layer)` ?
+
+- too much space, so let's do it per version object - as `ext_layers` are saved per big object in my logs; keep just class per AVHV
+  - then, what to do in theoretical case that class could be radically changed in time, or at least it's relationships hierarchy?
+    - such class/schema changes reminds of (unsolved) problem of moving/renaming files in Version Control Systems - no VCS has clean "inode" concept, workarounds everywhere...
+
+
+TBD need more think about peer exchange, tosser - inbound/outbound metadata per object? per directory?
+
+count of children in each directory - e.g. for display in user interface tree editor, for annotations etc.
+
+what to do with generic graph query? As it seems to be that only needed search is from leafs to version, let's reduce graph queries to up-tree direction: combine Perl variant with internal paths from variant 3, just replace "leaf" with object_id of leaf_object
+
+$dbh->sqlite_create_aggregate() for getting EAV as CBOR?
+
+```sql
+CREATE TBALE AVHV_body (
+    avhv_id     INTEGER NOT NULL REFERENCES AVHV_head,
+    array_idx   INTEGER,
+    keyname     INTEGER REFERENCES attribute_names,
+    value       ANY,        -- direct small
+    ref_texts   INTEGER REFERENCES PV_texts,
+    ref_bytes   INTEGER REFERENCES PV_bytes,
+    ref_object  INTEGER REFERENCES AVHV_head,
+    CHECK(array_idx IS NULL AND keyname IS NOT NULL OR array_idx IS NOT NULL AND keyname IS NULL),
+    CHECK(  -- value is either small embedded or one reference
+            value IS NULL
+            AND
+            ref_texts IS NOT NULL
+            AND
+            ref_bytes IS NULL
+            AND
+            ref_object IS NULL
+        OR
+            value IS NULL
+            ref_texts IS NULL
+            AND
+            ref_bytes IS NOT NULL
+            AND
+            ref_object IS NULL
+        OR
+            value IS NULL
+            ref_texts IS NULL
+            AND
+            ref_bytes IS NULL
+            AND
+            ref_object IS NOT NULL
+        OR
+            value IS NOT NULL
+            ref_texts IS NULL
+            AND
+            ref_bytes IS NULL
+            AND
+            ref_object IS NULL
+        ),
+    UNIQUE(avhv_id, array_idx, keyname, value, ref_texts, ref_bytes, ref_object)
+);
+```
+
+now let's try to extract object and it's children...
+
+```sql
+WITH RECURSIVE
+    obj_children(avhv_id) AS (
+        SELECT ?1
+        UNION
+        SELECT ref_object
+          FROM obj_children JOIN AVHV_body USING avhv_id -- XXX which is right?
+         WHERE AVHV_body.ref_object IS NOT NULL
+        -- AND obj_children.avhv_id = AVHV_body.ref_object
+    )
+    SELECT * FROM AVHV_body JOIN obj_children USING (avhv_id)
+             JOIN attribute_names ON keyname = attribute_names.id
+    ;
+```
 
 # Compression
 
@@ -638,7 +737,7 @@ on object splitting, how to find an INT id for reference to? create a way to hav
 
 variant: at INSERT populate `additional_section` (? a-la DNS ? or `outgoing_edge` ?) with links to object (concrete versions) to return with this, e.g. for `user` together with `message`; as Telegram returns users and chats
 ...but, querying and returning `chats` for every message could be expensive, and caller likely to have it in memory cache already
-- still should be done for mentioned chats, however (not that which it belongs to)
+- still should be done for "mentioned" chats, however (not that which it belongs to)
 - what with using this for compound objects? e.g. a local comment to picture will find picture by this, but what if there are too many messages referring to this picture?
 - about name "compound object", should it be really used for "photo of different sizes" or "video + thumbnail? may be "package" ?
 
@@ -660,7 +759,7 @@ may be don't give any real sense to inode? i.e. just JOIN on it and nothing more
 
 yes, have `is_content` on versions - e.g. plugin-decoded GPG message also may have edits, as by original message; and probably just move unread/score to plugin object (with `unseen` being determined by number pointer in dialog, and `unread` being explicitly toggled by user)
 - or NULL for content objects, and typename for plugin-objects - like HFS filesystem forks or NTFS streams?
-- put info about cached files (e.g. images) to such plugin-obhects also? but cached-file info is unversioned by it's nature...
+- put info about cached files (e.g. images) to such plugin-objects also? but cached-file info is unversioned by it's nature...
 
 can't have class/type in inode, must be in object - as reference from inode matrix may be for path which will be created just for this as we don't have real objects on it yet
 
