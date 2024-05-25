@@ -318,7 +318,7 @@ Imagine we have machine with 1 TB memory and unbreakable power, so we don't need
 
 However, how would we query such database for questions like "give me root objects where strings contain this word at any level deep" ? This would require a truly graph-oriented DB or at least some subset, with DAG paths. Even if we use some workaround knowing it's DAG starting only at objects of some type, there will be still too many paths in graph with every elementary object as a node.
 
-Also, it won't be _most_ effective storage with respect to diffs - consider hash with 30 members, a new version will duplicate all 30 elements even if only one is edited; finding some base text (PV) for a diff (e.g. a type edit) would be difficult, too.
+Also, it won't be _most_ effective storage with respect to diffs - consider hash with 30 members, a new version will duplicate all 30 elements even if only one is edited; finding some base text (PV) for a diff (e.g. a typo edit) would be difficult, too.
 
 ### Everything in CBOR, texts outside, deltas - variant 1
 
@@ -622,6 +622,7 @@ TBD what if object from peers had different schema versions but same CBOR? do we
 - too much space, so let's do it per version object - as `ext_layers` are saved per big object in my logs; keep just class per AVHV
   - then, what to do in theoretical case that class could be radically changed in time, or at least it's relationships hierarchy?
     - such class/schema changes reminds of (unsolved) problem of moving/renaming files in Version Control Systems - no VCS has clean "inode" concept, workarounds everywhere...
+    - _240420_ seems it's enough to somehow combine class name with layer (`ext_layers` example above), but then problem of FTS `prefix*` queries for `isa(*)`
 
 
 TBD need more think about peer exchange, tosser - inbound/outbound metadata per object? per directory?
@@ -634,13 +635,13 @@ $dbh->sqlite_create_aggregate() for getting EAV as CBOR?
 
 ```sql
 CREATE TBALE AVHV_body (
-    avhv_id     INTEGER NOT NULL REFERENCES AVHV_head,
+    avhv_id     INTEGER NOT NULL REFERENCES AVHV_head ON DELETE RESTRICT ON UPDATE RESTRICT,
     array_idx   INTEGER,
-    keyname     INTEGER REFERENCES attribute_names,
+    keyname     INTEGER REFERENCES attribute_names ON DELETE RESTRICT ON UPDATE RESTRICT,
     value       ANY,        -- direct small
-    ref_texts   INTEGER REFERENCES PV_texts,
-    ref_bytes   INTEGER REFERENCES PV_bytes,
-    ref_object  INTEGER REFERENCES AVHV_head,
+    ref_texts   INTEGER REFERENCES PV_texts        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    ref_bytes   INTEGER REFERENCES PV_bytes        ON DELETE RESTRICT ON UPDATE RESTRICT,
+    ref_object  INTEGER REFERENCES AVHV_head       ON DELETE RESTRICT ON UPDATE RESTRICT,
     CHECK(array_idx IS NULL AND keyname IS NOT NULL OR array_idx IS NOT NULL AND keyname IS NULL),
     CHECK(  -- value is either small embedded or one reference
             value IS NULL
@@ -692,6 +693,8 @@ WITH RECURSIVE
              JOIN attribute_names ON keyname = attribute_names.id
     ;
 ```
+
+TBD may be trigger instead of separate ref_ columns? 14 vs 17 bytes
 
 # Compression
 
