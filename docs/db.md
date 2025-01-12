@@ -322,7 +322,7 @@ Also, it won't be _most_ effective storage with respect to diffs - consider hash
 
 ### Everything in CBOR, texts outside, deltas - variant 1
 
-Put every string into special `texts` table, which is FTS4 or FTS5 one - for searching. Then, every document is serialized into CBOR with text strings changed to special integer tags, and stored as BLOB. Every version must be stored as separate CBOR, or it may have `delta_to` field with ID of BLOB to which we are diff - for this, [Fossil Delta](https://www.sqlite.org/src/file?name=ext/misc/fossildelta.c&ci=tip) or similar must be used.
+Put every string into special `texts` table, which is FTS4 or FTS5 one - for searching. Then, every document is serialized into CBOR with text strings changed to special integer tags (e.g. [Tag 32769](https://gitlab.com/Hawk777/cbor-specs/-/blob/main/external-reference.md)), and stored as BLOB. Every version must be stored as separate CBOR, or it may have `delta_to` field with ID of BLOB to which we are diff - for this, [Fossil Delta](https://www.sqlite.org/src/file?name=ext/misc/fossildelta.c&ci=tip) or similar must be used.
 
 For searching texts, there must be a table which maps CBOR BLOB id to texts IDs.
 
@@ -695,6 +695,54 @@ WITH RECURSIVE
 ```
 
 TBD may be trigger instead of separate ref_ columns? 14 vs 17 bytes
+
+## Dec 2024
+
+Seems that Perl variant is too expensive: if we index each and every field, to get internal path for *each* field of each object - means `O(M*N)` complexity in best case, where M is depth. And depth could be rather large for e.g. Telegram::MessageMediaWebPage. Probably, due to failure to invent good scheme without much overhead, fallback is needed: encode objects as CBOR, divide them by some criteria to be "root"/"referenced" objects - e.g. aforementioned WebPage, or all objects referenced in `ext_layers` by particular scheme (see about server bug in "Feb 2023" above), put indexes / ipath only on some selected subfields/subobjects/subpaths; and finally, use Tag 32769 for all text strings, to search on them - let's BLOBs to live inside CBOR.
+
+so TODO: gather all possible `ext_layers` in my logs, in addition to all objects having some "ID" field on which they can be retrieved from server
+
+```
+$ awk '/Telegram/{print $3}' ext_layers.txt | sed 's/,$//' | sort | uniq -c | sort -nr
+361529 'Telegram::Channel'
+253050 'Telegram::FileLocation'
+58938 'Telegram::Photo'
+37566 'Telegram::MessageMediaPhoto'
+16901 'Telegram::PageFull'
+12486 'Telegram::MessageMediaDocument'
+11226 'Telegram::MessageFwdHeader'
+3983 'Telegram::PagePart'
+1007 'Telegram::Document'
+ 454 'Telegram::User'
+ 325 'Telegram::Message'
+ 239 'Telegram::PollResults'
+ 140 'Telegram::UpdateUserStatus'
+  90 'Telegram::GeoPoint'
+  22 'Telegram::UpdateChatUserTyping'
+  19 'Telegram::Chat'
+  12 'Telegram::UpdateDeleteChannelMessages'
+  11 'Telegram::MessageReplyHeader'
+  10 'Telegram::UpdateReadChannelInbox'
+   6 'Telegram::MessageService'
+   5 'Telegram::MessageReactions'
+   4 'Telegram::UpdateReadChannelOutbox'
+   4 'Telegram::PeerChannel'
+   2 'Telegram::UpdateReadHistoryInbox'
+   2 'Telegram::UpdateChannelPinnedMessage'
+   2 'Telegram::UpdateChannelMessageViews'
+   2 'Telegram::MessagePeerReaction'
+   2 'Telegram::InputPeerUser'
+   2 'Telegram::InputPeerChat'
+   2 'Telegram::InputPeerChannel'
+   2 'Telegram::Dialog'
+   1 'Telegram::UpdateMessageReactions'
+   1 'Telegram::PeerNotifySettings'
+   1 'Telegram::MessageMediaWebPage'
+```
+
+Blake2: this new hash function is defined to be of variable digest size, so we could use it to save space - e.g. 11 byte hash, so collision probability is per 2^44 objects, which is about maximum theoretical size of SQLite DB (2^48 bytes with 64 Kb pages).
+
+Also FTS5 in fresh SQLite now have "trigram" tokenizer - so let's do possibility of having more than index on same texts, for both exact and fuzzy search.
 
 # Compression
 
